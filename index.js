@@ -140,7 +140,9 @@ app.post("/api/ai-plan", async (req, res) => {
             };
 
             try {
-                const pythonResponse = await axios.post("http://localhost:8000/generate", pythonPayload);
+              //  const pythonResponse = await axios.post("http://localhost:8000/generate", pythonPayload);
+              const pythonBaseUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
+              const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload);
                 realPlaces = pythonResponse.data.itinerary || [];
                 console.log(`✅ Python found ${realPlaces.length} real locations.`);
             } catch (pyErr) {
@@ -231,4 +233,6 @@ app.post("/api/ai-plan", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+});
