@@ -136,7 +136,7 @@ app.post("/api/ai-plan", async (req, res) => {
                 country: String(country || ""),
                 interests: Array.isArray(interests) ? interests : [],
                 budget: parseFloat(String(budget).replace(/[^0-9.]/g, '')) || 500,
-                duration: parseInt(duration) 
+                days: parseInt(duration)
             };
 
             try {
