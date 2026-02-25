@@ -23,8 +23,9 @@ mongoose.connect(process.env.MONGO_URI)
 app.use("/images", express.static(path.join(__dirname, "public/images")));
 
 // ---------------- ROUTES ----------------
-app.use("/auth", require("./routes/auth"));     // your existing auth
-app.use("/api", require("./routes/aiPlan"));   // AI itinerary routes
+app.use("/auth", require("./routes/auth"));     
+app.use("/api", require("./routes/aiPlan"));   
+app.use("/api/itineraries", require("./routes/itinerary"));   
 
 // ---------------- HEALTH CHECK ----------------
 app.get("/", (req, res) => {
