@@ -83,11 +83,11 @@ async function fetchUnsplashImage(query) {
     }
 
     if (imageCache.has(query)) {
-      console.log(`⚡ Cache hit for "${query}"`);
+     console.log(`⚡ Cache hit for "${query}"`);
       return imageCache.get(query);
     }
 
-    console.log(`🌍 Unsplash search → ${query}`);
+   console.log(`🌍 Unsplash search → ${query}`);
 
     const res = await axios.get(
       "https://api.unsplash.com/search/photos",
@@ -139,7 +139,7 @@ async function processImages(plan, city) {
           fallbackImagesByCategory[day.category] ||
           fallbackImagesByCategory.adventure;
 
-        //console.log("🪵 Using local fallback →", fallback);
+        console.log("🪵 Using local fallback →", fallback);
         day.image = fallback;
       }
     }
@@ -154,29 +154,77 @@ async function processImages(plan, city) {
 /* =====================================================
    MAIN AI ENDPOINT
 ===================================================== */
-
 router.post("/ai-plan", async (req, res) => {
   try {
     const { country, city, interests, budget, duration } = req.body;
 
-    const prompt = `
-Create a ${duration}-day travel itinerary for ${city}, ${country}.
+    if (!city || !duration) {
+      return res.status(400).json({ message: "Missing city or duration" });
+    }
 
-Return ONLY JSON:
-{
-"title":"Trip",
-"days":[
-{
-"day":1,
-"title":"Title",
-"activities":["A","B","C"],
-"category":"nature",
-"image":""
+    const isSupported = ALL_SUPPORTED_CITIES.includes(city);
+    let realPlaces = [];
+    let sourceNote = "";
+
+    if (isSupported) {
+      console.log(`🤖 ROUTE A: Using Python Algorithm (postgress  Data Found)`);
+      sourceNote = "Algorithmically Optimized (Verified postgress  Data)";
+      const pythonPayload = {
+        city: String(city),
+        country: String(country || ""),
+        interests: Array.isArray(interests) ? interests : [],
+        budget: parseFloat(String(budget).replace(/[^0-9.]/g, "")) || 500,
+        days: parseInt(duration),
+      };
+      try {
+        const pythonBaseUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
+        const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload);
+        realPlaces = pythonResponse.data.itinerary || [];
+        console.log(`✅ Python found ${realPlaces.length} real locations.`);
+      } catch (pyErr) {
+        console.error("❌ Python Server Error:", pyErr.response?.data?.detail || pyErr.message);
+        // Continue to Cohere if Python fails
+      }
+    } else {
+      console.log(`🌍 ROUTE B: Using Global AI Knowledge (Not in postgress )`);
+      sourceNote = "General AI Knowledge (Global Search)";
+    }
+
+    // Prepare Cohere prompt
+    const placeNames =
+      realPlaces.length > 0 ? realPlaces.map((p) => p.name).join(", ") : "top local landmarks and authentic hidden gems";
+
+    const prompt = `
+Task: Create a professional ${duration}-day travel itinerary for ${city}, ${country}.
+Source Type: This itinerary is ${sourceNote}.
+${
+  realPlaces.length > 0
+    ? `Mandatory Locations to include: ${placeNames}. Use ONLY these names for the main activities.`
+    : "Suggested Locations: Please suggest the best real-world attractions for this city."
 }
-]
+User Interests: ${interests?.join(", ") || "general exploration"}.
+Instructions:
+1. Organize the itinerary logically by day.
+2. For each day, provide a title and 3 distinct activities.
+3. Assign one category (culture, nature, food, adventure, history, or relaxation) per day.
+Return ONLY raw JSON. No markdown backticks, no explanations.
+{
+  "title": "Unforgettable trip to ${city}",
+  "dataSource": "${sourceNote}",
+  "days": [
+    {
+      "day": 1,
+      "title": "Day Title",
+      "activities": ["Activity 1", "Activity 2", "Activity 3"],
+      "category": "culture",
+      "image": ""
+    }
+  ]
 }
 `;
 
+    // Call Cohere AI
+    console.log("✍️ Step 2: Narrating with Cohere AI...");
     const cohereRes = await axios.post(
       "https://api.cohere.ai/v2/chat",
       {
@@ -192,24 +240,24 @@ Return ONLY JSON:
       }
     );
 
-    let reply = cohereRes.data.message.content[0].text
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
+    let reply = cohereRes?.data?.message?.content?.[0]?.text || "";
+    reply = reply.replace(/```json/g, "").replace(/```/g, "").trim();
 
-    //console.log("📥 Raw AI response received");
+   let parsedPlan;
+try {
+  parsedPlan = JSON.parse(reply);
 
-    let parsedPlan = JSON.parse(reply);
+  // -------------------------------
+  // STEP: ASSIGN SPLASH IMAGE OR FALLBACK
+  // -------------------------------
+  parsedPlan = await processImages(parsedPlan, city);
 
-    parsedPlan.days.forEach((d) => logImage("AI OUTPUT", d));
+} catch (parseErr) {
+  console.error("⚠️ AI JSON Parse failed. Content was:", reply);
+  parsedPlan = generateDummyItinerary(city, duration);
+}
 
-    parsedPlan = await processImages(parsedPlan, city);
-
-    //console.log("📤 Sending itinerary");
-
-    parsedPlan.days.forEach((d) => logImage("FINAL", d));
-
-    res.json(parsedPlan);
+res.json(parsedPlan);
   } catch (err) {
     console.error("❌ AI Route Error:", err.message);
     res.status(500).json({ message: "Internal server error" });
