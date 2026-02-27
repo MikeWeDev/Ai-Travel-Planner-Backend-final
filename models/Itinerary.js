@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 
 const itinerarySchema = new mongoose.Schema({
-  // Reference to the Traveler model
   traveler: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Traveler', 
@@ -11,7 +10,12 @@ const itinerarySchema = new mongoose.Schema({
   days: [{
     day: Number,
     title: String,
-    activities: [String],
+    // CHANGED: activities is now an array of OBJECTS, not just strings
+    activities: [{
+      name: String,
+      lat: Number,
+      lng: Number
+    }],
     image: String
   }]
 }, { timestamps: true });
