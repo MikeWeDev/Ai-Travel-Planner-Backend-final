@@ -142,31 +142,75 @@ async function processImages(plan, city) {
   return plan;
 }
 
+
 /* =====================================================
-   MAIN AI ENDPOINT (Updated for Coordinates)
+   MAIN AI ENDPOINT (With Enhanced Budget Guardrail)
 ===================================================== */
 router.post("/ai-plan", async (req, res) => {
   try {
     const { country, city, interests, budget, duration } = req.body;
 
-    if (!city || !duration) {
-      return res.status(400).json({ message: "Missing city or duration" });
+    // 1. BASIC VALIDATION
+    if (!city || !duration || !budget) {
+      return res.status(400).json({ message: "Missing required fields (city, duration, or budget)" });
     }
 
+    // 2. PARSE INPUTS
+    const numBudget = parseFloat(String(budget).replace(/[^0-9.]/g, "")) || 0;
+    const numDuration = parseInt(duration);
+
+    /* =====================================================
+       BUDGET GUARDRAIL FEATURE
+       Logic: Minimum $40/day for Ethiopia & Kenya cities.
+    ===================================================== */
+    const MIN_DAILY_RATE = 40; 
+    const totalMinRequired = MIN_DAILY_RATE * numDuration;
+
+    if (numBudget < totalMinRequired) {
+      // Calculate how many days they CAN afford
+      const maxAffordableDays = Math.floor(numBudget / MIN_DAILY_RATE);
+      
+      console.log(`⚠️ Budget Rejected: ${numBudget} for ${numDuration} days in ${city}`);
+      
+      // CREATE HELPFUL DYNAMIC MESSAGE
+      let dynamicMessage = "";
+      if (maxAffordableDays >= 1) {
+        // They have some money, but not enough for the requested time
+        dynamicMessage = `A budget of $${numBudget} is insufficient for a ${numDuration}-day trip to ${city}. To proceed, please increase your budget to $${totalMinRequired} or reduce the duration to ${maxAffordableDays} day(s).`;
+      } else {
+        // They don't even have enough for 1 day
+        dynamicMessage = `A total budget of $${numBudget} is below the baseline requirement for ${city}. In this region, a minimum of $${MIN_DAILY_RATE} per day is recommended to cover basic transport, food, and site fees so adject toward it.`;
+      }
+      
+      return res.status(400).json({
+        status: "REJECTED",
+        reason: "INSUFFICIENT_BUDGET",
+        message: dynamicMessage, 
+        recommendations: {
+          suggestedDuration: maxAffordableDays > 0 ? maxAffordableDays : 1,
+          requiredBudget: totalMinRequired,
+          dailyAverage: MIN_DAILY_RATE
+        }
+      });
+    }
+
+    /* =====================================================
+       PROCEED WITH GENERATION (BUDGET IS OK)
+    ===================================================== */
     const isSupported = ALL_SUPPORTED_CITIES.includes(city);
-    let realPlaces = []; // This will hold the daily itinerary from Python
+    let realPlaces = []; 
     let sourceNote = "";
 
-    // 1. FETCH DATA FROM PYTHON (If supported)
+    // 3. FETCH DATA FROM PYTHON (If supported)
     if (isSupported) {
-      console.log(`🤖 ROUTE A: Using Python Algorithm`);
+      console.log(`🤖 ROUTE A: Using Python Algorithm for ${city}`);
       sourceNote = "Algorithmically Optimized (Verified PostgreSQL Data)";
       const pythonPayload = {
         city: String(city),
         country: String(country || ""),
         interests: Array.isArray(interests) ? interests : [],
-        budget: parseFloat(String(budget).replace(/[^0-9.]/g, "")) || 500,
-        days: parseInt(duration),
+        budget: numBudget,
+        days: numDuration,
       };
       
       try {
@@ -178,8 +222,7 @@ router.post("/ai-plan", async (req, res) => {
       }
     }
 
-    // 2. PREPARE COORDINATE LOOKUP
-    // We create a map so we can find coordinates by name later
+    // 4. PREPARE COORDINATE LOOKUP
     const coordLookup = {};
     realPlaces.forEach(day => {
       day.activities.forEach(place => {
@@ -190,14 +233,15 @@ router.post("/ai-plan", async (req, res) => {
       });
     });
 
-    // 3. PREPARE PROMPT FOR COHERE
+    // 5. PREPARE PROMPT FOR COHERE
     const allPlaceNames = Object.keys(coordLookup).join(", ");
     const placeContext = allPlaceNames.length > 0 
       ? `Mandatory Locations to include: ${allPlaceNames}.` 
       : "Suggested Locations: Recommend best local spots.";
 
     const prompt = `
-      Task: Create a professional ${duration}-day travel itinerary for ${city}, ${country}.
+      Task: Create a professional ${numDuration}-day travel itinerary for ${city}, ${country}.
+      Total Budget: $${numBudget}.
       ${placeContext}
       User Interests: ${interests?.join(", ") || "general exploration"}.
       Instructions:
@@ -205,7 +249,7 @@ router.post("/ai-plan", async (req, res) => {
       2. Format: { "title": "...", "days": [ { "day": 1, "activities": ["Name1", "Name2"], "category": "..." } ] }
     `;
 
-    // 4. CALL COHERE
+    // 6. CALL COHERE
     const cohereRes = await axios.post("https://api.cohere.ai/v2/chat", {
       model: "command-r-plus-08-2024",
       messages: [{ role: "user", content: prompt }],
@@ -217,14 +261,13 @@ router.post("/ai-plan", async (req, res) => {
     let reply = cohereRes?.data?.message?.content?.[0]?.text || "";
     reply = reply.replace(/```json/g, "").replace(/```/g, "").trim();
 
-    // 5. PARSE AND ENRICH DATA (THE KEY STEP)
+    // 7. PARSE AND ENRICH DATA
     let parsedPlan = JSON.parse(reply);
 
     if (parsedPlan.days) {
       parsedPlan.days = parsedPlan.days.map(day => ({
         ...day,
         activities: day.activities.map(actName => {
-          // Find the coordinates from our Python lookup
           const coords = coordLookup[actName] || { lat: 0, lng: 0 };
           return {
             name: actName,
@@ -235,7 +278,7 @@ router.post("/ai-plan", async (req, res) => {
       }));
     }
 
-    // 6. ADD IMAGES AND SEND TO CLIENT
+    // 8. ADD IMAGES AND SEND TO CLIENT
     parsedPlan = await processImages(parsedPlan, city);
     res.json(parsedPlan);
 
