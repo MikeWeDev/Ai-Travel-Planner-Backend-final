@@ -1,21 +1,20 @@
 const express = require("express");
-
 const axios = require("axios");
-
 const router = express.Router();
+
+// =========================================================================
+// ✅ FIXED: Import the UserPreference Model and Authentication Middleware
+// =========================================================================
+const UserPreference = require("../models/UserPreference");
+const verifyToken = require("../middleware/verifyToken");
 
 /* =====================================================
    CONFIGURATION
 ===================================================== */
-
 const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
 
 const SUPPORTED_DATA = {
   Ethiopia: ["Addis Ababa", "Hawassa", "Bahir Dar", "Arba Minch", "Mekelle"],
-  Kenya: ["Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret"],
-  "United Kingdom": ["London", "Edinburgh", "Manchester", "Birmingham", "Glasgow"],
-  France: ["Paris", "Marseille", "Lyon", "Toulouse", "Nice"],
-  Japan: ["Tokyo", "Kyoto", "Osaka", "Sapporo", "Fukuoka"],
 };
 
 const ALL_SUPPORTED_CITIES = Object.values(SUPPORTED_DATA).flat();
@@ -23,7 +22,6 @@ const ALL_SUPPORTED_CITIES = Object.values(SUPPORTED_DATA).flat();
 /* =====================================================
    FALLBACK LOCAL IMAGES
 ===================================================== */
-
 const fallbackImagesByCategory = {
   arrival: "/images/arrival.jpg",
   culture: "/images/culture.jpg",
@@ -49,7 +47,6 @@ const fallbackImagesByCategory = {
 /* =====================================================
    DEBUG HELPERS
 ===================================================== */
-
 function logImage(stage, day) {
   //console.log( `🖼 [${stage}] Day ${day.day} | category=${day.category} | image=${day.image}` );
 }
@@ -57,7 +54,6 @@ function logImage(stage, day) {
 /* =====================================================
    IMAGE VALIDATION
 ===================================================== */
-
 function isValidImage(url) {
   if (!url) return false;
   if (url.includes("example.com")) return false;
@@ -68,13 +64,11 @@ function isValidImage(url) {
 /* =====================================================
    UNSPLASH IMAGE CACHE
 ===================================================== */
-
 const imageCache = new Map();
 
 /* =====================================================
    FETCH IMAGE FROM UNSPLASH
 ===================================================== */
-
 async function fetchUnsplashImage(query) {
   try {
     if (!UNSPLASH_KEY) {
@@ -83,11 +77,11 @@ async function fetchUnsplashImage(query) {
     }
 
     if (imageCache.has(query)) {
-     console.log(`⚡ Cache hit for "${query}"`);
+      console.log(`⚡ Cache hit for "${query}"`);
       return imageCache.get(query);
     }
 
-   console.log(`🌍 Unsplash search → ${query}`);
+    console.log(`🌍 Unsplash search → ${query}`);
 
     const res = await axios.get(
       "https://api.unsplash.com/search/photos",
@@ -119,14 +113,11 @@ async function fetchUnsplashImage(query) {
 /* =====================================================
    IMAGE PROCESSOR (MAIN MAGIC)
 ===================================================== */
-
 async function processImages(plan, city) {
   for (const day of plan.days) {
-    // 1. Ensure a category exists, otherwise default to 'adventure'
     const category = day.category?.toLowerCase() || "adventure";
 
     if (!isValidImage(day.image)) {
-      // 2. Use the city and category for a specific search
       const searchQuery = `${category} attractions in ${city}`;
 
       const unsplashImage = await fetchUnsplashImage(searchQuery);
@@ -134,7 +125,6 @@ async function processImages(plan, city) {
       if (unsplashImage) {
         day.image = unsplashImage;
       } else {
-        // 3. Fallback to your local images
         day.image = fallbackImagesByCategory[category] || fallbackImagesByCategory.adventure;
       }
     }
@@ -142,11 +132,10 @@ async function processImages(plan, city) {
   return plan;
 }
 
-
 /* =====================================================
-   MAIN AI ENDPOINT (With Enhanced Budget Guardrail)
+   MAIN AI ENDPOINT (Updated with verifyToken Guard)
 ===================================================== */
-router.post("/ai-plan", async (req, res) => {
+router.post("/ai-plan", verifyToken, async (req, res) => {
   try {
     const { country, city, interests, budget, duration } = req.body;
 
@@ -161,24 +150,19 @@ router.post("/ai-plan", async (req, res) => {
 
     /* =====================================================
        BUDGET GUARDRAIL FEATURE
-       Logic: Minimum $40/day for Ethiopia & Kenya cities.
     ===================================================== */
     const MIN_DAILY_RATE = 40; 
     const totalMinRequired = MIN_DAILY_RATE * numDuration;
 
     if (numBudget < totalMinRequired) {
-      // Calculate how many days they CAN afford
       const maxAffordableDays = Math.floor(numBudget / MIN_DAILY_RATE);
       
       console.log(`⚠️ Budget Rejected: ${numBudget} for ${numDuration} days in ${city}`);
       
-      // CREATE HELPFUL DYNAMIC MESSAGE
       let dynamicMessage = "";
       if (maxAffordableDays >= 1) {
-        // They have some money, but not enough for the requested time
         dynamicMessage = `A budget of $${numBudget} is insufficient for a ${numDuration}-day trip to ${city}. To proceed, please increase your budget to $${totalMinRequired} or reduce the duration to ${maxAffordableDays} day(s).`;
       } else {
-        // They don't even have enough for 1 day
         dynamicMessage = `A total budget of $${numBudget} is below the baseline requirement for ${city}. In this region, a minimum of $${MIN_DAILY_RATE} per day is recommended to cover basic transport, food, and site fees so adject toward it.`;
       }
       
@@ -199,18 +183,39 @@ router.post("/ai-plan", async (req, res) => {
     ===================================================== */
     const isSupported = ALL_SUPPORTED_CITIES.includes(city);
     let realPlaces = []; 
-    let sourceNote = "";
+
+    // =========================================================================
+    // ✅ EXTRACTION: Fetch BOTH Negative Constraints & Positive Anchors
+    // =========================================================================
+    let historicalComplaints = [];
+    let positiveStyles = [];
+    const userId = req.user ? req.user.id : null;
+
+    if (userId) {
+      const userProfile = await UserPreference.findOne({ userId: userId });
+      if (userProfile) {
+        if (userProfile.negativeConstraints) {
+          historicalComplaints = userProfile.negativeConstraints.map(c => c.feedback);
+        }
+        // ✅ ADDED: Gather positive traits from previous 4 and 5 star reviews
+        if (userProfile.positiveAnchors) {
+          positiveStyles = userProfile.positiveAnchors.map(a => a.feedback);
+        }
+      }
+    }
 
     // 3. FETCH DATA FROM PYTHON (If supported)
     if (isSupported) {
       console.log(`🤖 ROUTE A: Using Python Algorithm for ${city}`);
-      sourceNote = "Algorithmically Optimized (Verified PostgreSQL Data)";
+
       const pythonPayload = {
         city: String(city),
         country: String(country || ""),
         interests: Array.isArray(interests) ? interests : [],
         budget: numBudget,
         days: numDuration,
+        negative_constraints: historicalComplaints,
+        positive_constraints: positiveStyles // ✅ ADDED: Forwarding success parameters to Python metrics
       };
       
       try {
@@ -225,28 +230,43 @@ router.post("/ai-plan", async (req, res) => {
     // 4. PREPARE COORDINATE LOOKUP
     const coordLookup = {};
     realPlaces.forEach(day => {
-      day.activities.forEach(place => {
-        coordLookup[place.name] = { 
-          lat: place.latitude, 
-          lng: place.longitude 
-        };
-      });
+      if (day.activities && Array.isArray(day.activities)) {
+        day.activities.forEach(place => {
+          coordLookup[place.name] = { 
+            lat: place.latitude || place.lat, 
+            lng: place.longitude || place.lng 
+          };
+        });
+      }
     });
 
-    // 5. PREPARE PROMPT FOR COHERE
+    // 5. PREPARE PROMPT FOR COHERE WITH HARD ENFORCEMENT RULES
     const allPlaceNames = Object.keys(coordLookup).join(", ");
     const placeContext = allPlaceNames.length > 0 
       ? `Mandatory Locations to include: ${allPlaceNames}.` 
       : "Suggested Locations: Recommend best local spots.";
 
+    const exclusionsContext = historicalComplaints.length > 0
+      ? `CRITICAL EXCLUSIONS: Do NOT include, mention, or suggest any of these places or activities under any circumstances: ${historicalComplaints.join(", ")}.`
+      : "";
+
+    // ✅ ADDED: Instructing Cohere to replicate user preferences discovered during high ratings
+    const inclusionStylesContext = positiveStyles.length > 0
+      ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing pacing format.`
+      : "";
+
     const prompt = `
       Task: Create a professional ${numDuration}-day travel itinerary for ${city}, ${country}.
       Total Budget: $${numBudget}.
       ${placeContext}
+      ${exclusionsContext}
+      ${inclusionStylesContext}
       User Interests: ${interests?.join(", ") || "general exploration"}.
+
       Instructions:
-      1. Return ONLY raw JSON. No markdown.
+      1. Return ONLY raw JSON. No markdown wrappers (do NOT use \`\`\`json).
       2. Format: { "title": "...", "days": [ { "day": 1, "activities": ["Name1", "Name2"], "category": "..." } ] }
+      3. Strict Rule: If any location name matches or is related to items listed in the CRITICAL EXCLUSIONS section, omit it completely. Choose alternative local attractions instead.
     `;
 
     // 6. CALL COHERE
@@ -287,4 +307,5 @@ router.post("/ai-plan", async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
 module.exports = router;
