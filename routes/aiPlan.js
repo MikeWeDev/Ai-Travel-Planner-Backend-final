@@ -45,13 +45,6 @@ const fallbackImagesByCategory = {
 };
 
 /* =====================================================
-   DEBUG HELPERS
-===================================================== */
-function logImage(stage, day) {
-  //console.log( `🖼 [${stage}] Day ${day.day} | category=${day.category} | image=${day.image}` );
-}
-
-/* =====================================================
    IMAGE VALIDATION
 ===================================================== */
 function isValidImage(url) {
@@ -114,6 +107,8 @@ async function fetchUnsplashImage(query) {
    IMAGE PROCESSOR (MAIN MAGIC)
 ===================================================== */
 async function processImages(plan, city) {
+  if (!plan || !plan.days) return plan;
+  
   for (const day of plan.days) {
     const category = day.category?.toLowerCase() || "adventure";
 
@@ -163,7 +158,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       if (maxAffordableDays >= 1) {
         dynamicMessage = `A budget of $${numBudget} is insufficient for a ${numDuration}-day trip to ${city}. To proceed, please increase your budget to $${totalMinRequired} or reduce the duration to ${maxAffordableDays} day(s).`;
       } else {
-        dynamicMessage = `A total budget of $${numBudget} is below the baseline requirement for ${city}. In this region, a minimum of $${MIN_DAILY_RATE} per day is recommended to cover basic transport, food, and site fees so adject toward it.`;
+        dynamicMessage = `A total budget of $${numBudget} is below the baseline requirement for ${city}. In this region, a minimum of $${MIN_DAILY_RATE} per day is recommended to cover basic transport, food, and site fees so adjust toward it.`;
       }
       
       return res.status(400).json({
@@ -197,7 +192,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
         if (userProfile.negativeConstraints) {
           historicalComplaints = userProfile.negativeConstraints.map(c => c.feedback);
         }
-        // ✅ ADDED: Gather positive traits from previous 4 and 5 star reviews
+        // ✅ Gathers positive traits from previous 4 and 5 star reviews
         if (userProfile.positiveAnchors) {
           positiveStyles = userProfile.positiveAnchors.map(a => a.feedback);
         }
@@ -215,11 +210,12 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
         budget: numBudget,
         days: numDuration,
         negative_constraints: historicalComplaints,
-        positive_constraints: positiveStyles // ✅ ADDED: Forwarding success parameters to Python metrics
+        positive_constraints: positiveStyles 
       };
       
       try {
-        const pythonBaseUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
+        // 🌐 FIX: Strictly utilize environment variables without hardcoded fallbacks
+        const pythonBaseUrl = process.env.PYTHON_BACKEND_URL;
         const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload);
         realPlaces = pythonResponse.data.itinerary || [];
       } catch (pyErr) {
@@ -250,9 +246,9 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       ? `CRITICAL EXCLUSIONS: Do NOT include, mention, or suggest any of these places or activities under any circumstances: ${historicalComplaints.join(", ")}.`
       : "";
 
-    // ✅ ADDED: Instructing Cohere to replicate user preferences discovered during high ratings
+    // Instructing Cohere to replicate user preferences discovered during high ratings
     const inclusionStylesContext = positiveStyles.length > 0
-      ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing pacing format.`
+      ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing format.`
       : "";
 
     const prompt = `
@@ -282,12 +278,18 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
     reply = reply.replace(/```json/g, "").replace(/```/g, "").trim();
 
     // 7. PARSE AND ENRICH DATA
-    let parsedPlan = JSON.parse(reply);
+    let parsedPlan;
+    try {
+      parsedPlan = JSON.parse(reply);
+    } catch (parseExc) {
+      console.error("❌ Cohere Output Parsing Exception:", parseExc.message);
+      return res.status(502).json({ message: "Engine generated unparseable trip architecture structure." });
+    }
 
-    if (parsedPlan.days) {
+    if (parsedPlan && parsedPlan.days) {
       parsedPlan.days = parsedPlan.days.map(day => ({
         ...day,
-        activities: day.activities.map(actName => {
+        activities: (day.activities || []).map(actName => {
           const coords = coordLookup[actName] || { lat: 0, lng: 0 };
           return {
             name: actName,

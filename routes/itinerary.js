@@ -26,8 +26,8 @@ router.post('/reject', verifyToken, async (req, res) => {
       );
     }
 
-    // Forward raw analytics telemetry payload directly to the Python AI engine
-    const pythonResponse = await axios.post('http://localhost:8000/api/learn/feedback', {
+    // Forward raw analytics telemetry payload directly to the Python AI engine using environment variables
+    const pythonResponse = await axios.post(`${process.env.PYTHON_BACKEND_URL}/api/learn/feedback`, {
       user_id: userId,
       title: originalTitle,
       itinerary: itineraryData,
@@ -48,11 +48,11 @@ router.post('/reject', verifyToken, async (req, res) => {
 
 /**
  * 💡 REFERENCE NOTE FOR YOUR GENERATE ROUTE:
- * Wherever your application code makes an HTTP POST call to 'http://localhost:8000/generate',
+ * Wherever your application code makes an HTTP POST call to your python backend,
  * update it to include historical negative constraints like this:
  * * const userProfile = await UserPreference.findOne({ userId: req.user.id });
  * const historicalComplaints = userProfile ? userProfile.negativeConstraints.map(c => c.feedback) : [];
- * * const pythonResponse = await axios.post('http://localhost:8000/generate', {
+ * * const pythonResponse = await axios.post(`${process.env.PYTHON_BACKEND_URL}/generate`, {
  * ...req.body,
  * negative_constraints: historicalComplaints
  * });
@@ -172,9 +172,9 @@ router.patch("/rate/:id", verifyToken, async (req, res) => {
         { upsert: true, new: true }
       );
 
-      // Forward positive training weights down to the Python AI engine
+      // Forward positive training weights down to the Python AI engine using environment variables
       try {
-        await axios.post('http://localhost:8000/api/learn/feedback', {
+        await axios.post(`${process.env.PYTHON_BACKEND_URL}/api/learn/feedback`, {
           user_id: userId,
           title: updatedItinerary.title,
           itinerary: updatedItinerary.days,
@@ -193,4 +193,5 @@ router.patch("/rate/:id", verifyToken, async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
 module.exports = router;
