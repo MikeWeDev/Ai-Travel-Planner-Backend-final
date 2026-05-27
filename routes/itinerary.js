@@ -3,9 +3,17 @@ const router = require('express').Router();
 const Itinerary = require('../models/Itinerary');
 const UserPreference = require('../models/UserPreference');
 const verifyToken = require('../middleware/verifyToken');
-
-// ✅ FIXED: Added missing axios import so the downstream request works perfectly
 const axios = require('axios');
+
+// Helper function to safely format the backend URL with a fallback protocol prefix if missing
+const getCleanBackendUrl = () => {
+  let url = process.env.PYTHON_BACKEND_URL;
+  if (!url) return "http://localhost:8000";
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    url = `http://${url}`;
+  }
+  return url.replace(/\/$/, ""); // Remove trailing slash if present
+};
 
 router.post('/reject', verifyToken, async (req, res) => {
   try {
@@ -21,23 +29,27 @@ router.post('/reject', verifyToken, async (req, res) => {
             negativeConstraints: { title: originalTitle, feedback: reason } 
           } 
         },
-        // ✅ FIXED: Capitalized Python 'True' changed to JavaScript lowercase 'true'
         { upsert: true, new: true } 
       );
     }
 
-    // Forward raw analytics telemetry payload directly to the Python AI engine using environment variables
-    const pythonResponse = await axios.post(`${process.env.PYTHON_BACKEND_URL}/api/learn/feedback`, {
-      user_id: userId,
-      title: originalTitle,
-      itinerary: itineraryData,
-      feedback: reason
-    });
+    // Forward raw analytics telemetry payload to the Python AI engine using formatted variables
+    try {
+      const pythonUrl = getCleanBackendUrl();
+      await axios.post(`${pythonUrl}/api/learn/feedback`, {
+        user_id: userId,
+        title: originalTitle,
+        itinerary: itineraryData,
+        feedback: reason
+      }, { timeout: 6000 }); // Optional: explicit timeout prevents hanging indefinitely
+    } catch (pyTeleErr) {
+      console.error("⚠️ Python Telemetry Engine rejected transmission:", pyTeleErr.message);
+      // We don't crash the loop or return a 500 error here so the user can still proceed with regeneration
+    }
 
     return res.status(200).json({ 
       success: true, 
-      message: "Feedback processed and AI model calibrated successfully.",
-      data: pythonResponse.data 
+      message: "Feedback processed and parameters updated successfully."
     });
 
   } catch (error) {
@@ -46,19 +58,7 @@ router.post('/reject', verifyToken, async (req, res) => {
   }
 });
 
-/**
- * 💡 REFERENCE NOTE FOR YOUR GENERATE ROUTE:
- * Wherever your application code makes an HTTP POST call to your python backend,
- * update it to include historical negative constraints like this:
- * * const userProfile = await UserPreference.findOne({ userId: req.user.id });
- * const historicalComplaints = userProfile ? userProfile.negativeConstraints.map(c => c.feedback) : [];
- * * const pythonResponse = await axios.post(`${process.env.PYTHON_BACKEND_URL}/generate`, {
- * ...req.body,
- * negative_constraints: historicalComplaints
- * });
- */
-
-// 1. SAVE ITINERARY (Updated with internal validation)
+// 1. SAVE ITINERARY
 router.post('/save', verifyToken, async (req, res) => {
   try {
     const { title, days } = req.body;
@@ -75,7 +75,6 @@ router.post('/save', verifyToken, async (req, res) => {
 
     const savedDoc = await newItinerary.save();
     
-    // ✅ CHANGED: changed key from 'id' to '_id' to align with frontend checks
     res.status(201).json({ 
       success: true,
       message: "Itinerary saved successfully!", 
@@ -87,9 +86,7 @@ router.post('/save', verifyToken, async (req, res) => {
   }
 });
 
-
-
-// 2. FETCH ALL ITINERARIES (Remains the same - works perfectly)
+// 2. FETCH ALL ITINERARIES
 router.get('/my-itineraries', verifyToken, async (req, res) => {
   try {
     const itineraries = await Itinerary.find({ traveler: req.user.id })
@@ -101,7 +98,7 @@ router.get('/my-itineraries', verifyToken, async (req, res) => {
   }
 });
 
-// 3. GET SPECIFIC ITINERARY (Crucial for the Map Detail Page)
+// 3. GET SPECIFIC ITINERARY
 router.get('/:id', verifyToken, async (req, res) => {
   try {
     const itinerary = await Itinerary.findOne({ 
@@ -132,14 +129,13 @@ router.delete('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// ✅ INDEPENDENT RATING ENDPOINT (Matching your traveler key rules)
+// ✅ INDEPENDENT RATING ENDPOINT
 router.patch("/rate/:id", verifyToken, async (req, res) => {
   try {
     const { rating, ratingComment } = req.body;
     const itineraryId = req.params.id;
     const userId = req.user.id;
 
-    // 1. Update the individual itinerary record directly
     const updatedItinerary = await Itinerary.findOneAndUpdate(
       { _id: itineraryId, traveler: userId },
       { 
@@ -155,9 +151,7 @@ router.patch("/rate/:id", verifyToken, async (req, res) => {
       return res.status(404).json({ message: "Itinerary layout mapping not found or unauthorized access." });
     }
 
-    // 2. ✅ AI Learning Layer: Capture positive feedback for future iterations
     if (Number(rating) >= 4) {
-      // Save it to MongoDB for our Node.js historical reference accumulation
       await UserPreference.findOneAndUpdate(
         { userId: userId },
         { 
@@ -172,17 +166,16 @@ router.patch("/rate/:id", verifyToken, async (req, res) => {
         { upsert: true, new: true }
       );
 
-      // Forward positive training weights down to the Python AI engine using environment variables
       try {
-        await axios.post(`${process.env.PYTHON_BACKEND_URL}/api/learn/feedback`, {
+        const pythonUrl = getCleanBackendUrl();
+        await axios.post(`${pythonUrl}/api/learn/feedback`, {
           user_id: userId,
           title: updatedItinerary.title,
           itinerary: updatedItinerary.days,
           feedback: ratingComment || "Perfect generation match",
-          signal_type: "POSITIVE" // Tell Python this is a success model, not a rejection
-        });
+          signal_type: "POSITIVE" 
+        }, { timeout: 4000 });
       } catch (aiErr) {
-        // Log AI endpoint errors gracefully so user experience doesn't break if python service lags
         console.error("Failed to forward positive anchor telemetry to Python engine:", aiErr.message);
       }
     }
