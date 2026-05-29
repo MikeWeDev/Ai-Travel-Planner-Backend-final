@@ -44,12 +44,8 @@ const fallbackImagesByCategory = {
   education: "/images/education.jpg",
 };
 
-/* =====================================================
-   DEBUG HELPERS
-===================================================== */
-function logImage(stage, day) {
-  //console.log( `🖼 [${stage}] Day ${day.day} | category=${day.category} | image=${day.image}` );
-}
+// Flattened list to guarantee random-access variety if categories overlap or get repeated
+const fallbackFallbackList = Object.values(fallbackImagesByCategory);
 
 /* =====================================================
    IMAGE VALIDATION
@@ -114,18 +110,30 @@ async function fetchUnsplashImage(query) {
    IMAGE PROCESSOR (MAIN MAGIC)
 ===================================================== */
 async function processImages(plan, city) {
-  for (const day of plan.days) {
+  const isSupportedCity = ALL_SUPPORTED_CITIES.includes(city);
+
+  // Use the map index loop to guarantee variety fallbacks if categories stall out
+  for (let i = 0; i < plan.days.length; i++) {
+    const day = plan.days[i];
     const category = day.category?.toLowerCase() || "adventure";
 
     if (!isValidImage(day.image)) {
-      const searchQuery = `${category} attractions in ${city}`;
-
-      const unsplashImage = await fetchUnsplashImage(searchQuery);
-
-      if (unsplashImage) {
-        day.image = unsplashImage;
+      if (isSupportedCity) {
+        // Look up by category string, but if missing or matches a default, use a diverse index calculation fallback
+        if (fallbackImagesByCategory[category]) {
+          day.image = fallbackImagesByCategory[category];
+        } else {
+          day.image = fallbackFallbackList[i % fallbackFallbackList.length];
+        }
       } else {
-        day.image = fallbackImagesByCategory[category] || fallbackImagesByCategory.adventure;
+        const searchQuery = `${category} attractions in ${city}`;
+        const unsplashImage = await fetchUnsplashImage(searchQuery);
+
+        if (unsplashImage) {
+          day.image = unsplashImage;
+        } else {
+          day.image = fallbackImagesByCategory[category] || fallbackFallbackList[i % fallbackFallbackList.length];
+        }
       }
     }
   }
@@ -197,7 +205,6 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
         if (userProfile.negativeConstraints) {
           historicalComplaints = userProfile.negativeConstraints.map(c => c.feedback);
         }
-        // ✅ ADDED: Gather positive traits from previous 4 and 5 star reviews
         if (userProfile.positiveAnchors) {
           positiveStyles = userProfile.positiveAnchors.map(a => a.feedback);
         }
@@ -215,7 +222,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
         budget: numBudget,
         days: numDuration,
         negative_constraints: historicalComplaints,
-        positive_constraints: positiveStyles // ✅ ADDED: Forwarding success parameters to Python metrics
+        positive_constraints: positiveStyles 
       };
       
       try {
@@ -250,11 +257,11 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       ? `CRITICAL EXCLUSIONS: Do NOT include, mention, or suggest any of these places or activities under any circumstances: ${historicalComplaints.join(", ")}.`
       : "";
 
-    // ✅ ADDED: Instructing Cohere to replicate user preferences discovered during high ratings
     const inclusionStylesContext = positiveStyles.length > 0
       ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing pacing format.`
       : "";
 
+    // ✅ FIXED: Instructing AI to rotate "category" properties systematically matching your schema keys
     const prompt = `
       Task: Create a professional ${numDuration}-day travel itinerary for ${city}, ${country}.
       Total Budget: $${numBudget}.
@@ -265,8 +272,24 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
 
       Instructions:
       1. Return ONLY raw JSON. No markdown wrappers (do NOT use \`\`\`json).
-      2. Format: { "title": "...", "days": [ { "day": 1, "activities": ["Name1", "Name2"], "category": "..." } ] }
-      3. Strict Rule: If any location name matches or is related to items listed in the CRITICAL EXCLUSIONS section, omit it completely. Choose alternative local attractions instead.
+      2. Format exactly as this structure: 
+         { 
+           "title": "Trip Title Here", 
+           "days": [ 
+             { 
+               "day": 1, 
+               "category": "culture", 
+               "activities": [
+                 { "name": "Exact Place Name 1", "lat": 0.0000, "lng": 0.0000 },
+                 { "name": "Exact Place Name 2", "lat": 0.0000, "lng": 0.0000 }
+               ] 
+             } 
+           ] 
+         }
+      3. Category Rule: You must assign a distinct contextual theme key to each day's "category" parameter matching the target activities. Choose dynamically from this list: [arrival, culture, adventure, shopping, food, relaxation, wildlife, history, nightlife, departure, hotel, museum, nature, sport, historical, festival]. Do not just repeat the same category for every day.
+      4. Coordinates Rule: Look up and provide real, highly accurate GPS decimal coordinates ("lat" and "lng") for every single activity location. Do not leave them at 0.
+      5. Density Rule: Each day MUST contain a minimum of 3 activities, and a maximum of 5 activities. Aim for 4-5 high-quality activities per day if context allows. Never provide fewer than 3.
+      6. Strict Rule: If any location name matches or is related to items listed in the CRITICAL EXCLUSIONS section, omit it completely. Choose alternative local attractions instead.
     `;
 
     // 6. CALL COHERE
@@ -287,12 +310,17 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
     if (parsedPlan.days) {
       parsedPlan.days = parsedPlan.days.map(day => ({
         ...day,
-        activities: day.activities.map(actName => {
-          const coords = coordLookup[actName] || { lat: 0, lng: 0 };
+        activities: (day.activities || []).map(act => {
+          const targetName = typeof act === "string" ? act : act.name;
+          const aiLat = typeof act === "object" ? (act.lat || act.latitude || 0) : 0;
+          const aiLng = typeof act === "object" ? (act.lng || act.longitude || 0) : 0;
+
+          const pythonCoords = coordLookup[targetName];
+          
           return {
-            name: actName,
-            lat: coords.lat,
-            lng: coords.lng
+            name: targetName,
+            lat: pythonCoords?.lat || aiLat,
+            lng: pythonCoords?.lng || aiLng
           };
         })
       }));
