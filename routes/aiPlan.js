@@ -11,6 +11,9 @@ const verifyToken = require("../middleware/verifyToken");
 /* =====================================================
    CONFIGURATION
 ===================================================== */
+// 🟢 TOGGLE THIS FLAG TO SWITCH BETWEEN COHERE-ONLY AND PYTHON+COHERE
+const USE_PYTHON_BACKEND = false;
+
 const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
 
 const SUPPORTED_DATA = {
@@ -211,8 +214,8 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       }
     }
 
-    // 3. FETCH DATA FROM PYTHON (If supported)
-    if (isSupported) {
+    // 3. FETCH DATA FROM PYTHON (Only if USE_PYTHON_BACKEND flag is set to true)
+    if (USE_PYTHON_BACKEND && isSupported) {
       console.log(`🤖 ROUTE A: Using Python Algorithm for ${city}`);
 
       const pythonPayload = {
@@ -232,6 +235,8 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       } catch (pyErr) {
         console.error("❌ Python Server Error:", pyErr.message);
       }
+    } else {
+      console.log(`⚡ Cohere-Only Mode Active (Python Redirection Bypassed) for ${city}`);
     }
 
     // 4. PREPARE COORDINATE LOOKUP
@@ -258,7 +263,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       : "";
 
     const inclusionStylesContext = positiveStyles.length > 0
-      ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing pacing format.`
+      ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing format.`
       : "";
 
     // ✅ FIXED: Instructing AI to rotate "category" properties systematically matching your schema keys
