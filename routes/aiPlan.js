@@ -8,7 +8,7 @@ const router = express.Router();
 const UserPreference = require("../models/UserPreference");
 const verifyToken = require("../middleware/verifyToken");
 
-/* =====================================================
+/* ====================================================
    CONFIGURATION
 ===================================================== */
 // 🟢 TOGGLE THIS FLAG TO SWITCH BETWEEN COHERE-ONLY AND PYTHON+COHERE
@@ -112,37 +112,46 @@ async function fetchUnsplashImage(query) {
 /* =====================================================
    IMAGE PROCESSOR (MAIN MAGIC)
 ===================================================== */
+/* =====================================================
+   IMAGE PROCESSOR (OPTIMIZED: PARALLEL FETCHING)
+===================================================== */
 async function processImages(plan, city) {
   const isSupportedCity = ALL_SUPPORTED_CITIES.includes(city);
 
-  // Use the map index loop to guarantee variety fallbacks if categories stall out
-  for (let i = 0; i < plan.days.length; i++) {
-    const day = plan.days[i];
-    const category = day.category?.toLowerCase() || "adventure";
+  if (!plan.days || !Array.isArray(plan.days)) return plan;
 
-    if (!isValidImage(day.image)) {
-      if (isSupportedCity) {
-        // Look up by category string, but if missing or matches a default, use a diverse index calculation fallback
-        if (fallbackImagesByCategory[category]) {
-          day.image = fallbackImagesByCategory[category];
-        } else {
-          day.image = fallbackFallbackList[i % fallbackFallbackList.length];
-        }
-      } else {
-        const searchQuery = `${category} attractions in ${city}`;
-        const unsplashImage = await fetchUnsplashImage(searchQuery);
+  // Process all days concurrently using Promise.all
+  await Promise.all(
+    plan.days.map(async (day, i) => {
+      const category = day.category?.toLowerCase() || "adventure";
 
-        if (unsplashImage) {
-          day.image = unsplashImage;
+      if (!isValidImage(day.image)) {
+        if (isSupportedCity) {
+          if (fallbackImagesByCategory[category]) {
+            day.image = fallbackImagesByCategory[category];
+          } else {
+            day.image = fallbackFallbackList[i % fallbackFallbackList.length];
+          }
         } else {
-          day.image = fallbackImagesByCategory[category] || fallbackFallbackList[i % fallbackFallbackList.length];
+          const searchQuery = `${category} attractions in ${city}`;
+          
+          // Fetches all Unsplash images concurrently across all days
+          const unsplashImage = await fetchUnsplashImage(searchQuery);
+
+          if (unsplashImage) {
+            day.image = unsplashImage;
+          } else {
+            day.image =
+              fallbackImagesByCategory[category] ||
+              fallbackFallbackList[i % fallbackFallbackList.length];
+          }
         }
       }
-    }
-  }
+    })
+  );
+
   return plan;
 }
-
 /* =====================================================
    MAIN AI ENDPOINT (Updated with verifyToken Guard)
 ===================================================== */
