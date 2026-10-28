@@ -14,6 +14,9 @@ const verifyToken = require("../middleware/verifyToken");
 // 🟢 TOGGLE THIS FLAG TO SWITCH BETWEEN COHERE-ONLY AND PYTHON+COHERE
 const USE_PYTHON_BACKEND = false;
 
+// 🟢 TOGGLE THIS FLAG FOR UNSPLASH (Set to true to use Unsplash, false to use category fallbacks globally)
+const USE_SPLASH = false;
+
 const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
 
 const SUPPORTED_DATA = {
@@ -112,9 +115,6 @@ async function fetchUnsplashImage(query) {
 /* =====================================================
    IMAGE PROCESSOR (MAIN MAGIC)
 ===================================================== */
-/* =====================================================
-   IMAGE PROCESSOR (OPTIMIZED: PARALLEL FETCHING)
-===================================================== */
 async function processImages(plan, city) {
   const isSupportedCity = ALL_SUPPORTED_CITIES.includes(city);
 
@@ -126,25 +126,22 @@ async function processImages(plan, city) {
       const category = day.category?.toLowerCase() || "adventure";
 
       if (!isValidImage(day.image)) {
-        if (isSupportedCity) {
-          if (fallbackImagesByCategory[category]) {
-            day.image = fallbackImagesByCategory[category];
-          } else {
-            day.image = fallbackFallbackList[i % fallbackFallbackList.length];
-          }
-        } else {
+        // If USE_SPLASH is true and it's a global (unsupported) city, try fetching from Unsplash first
+        if (USE_SPLASH && !isSupportedCity) {
           const searchQuery = `${category} attractions in ${city}`;
-          
-          // Fetches all Unsplash images concurrently across all days
           const unsplashImage = await fetchUnsplashImage(searchQuery);
 
           if (unsplashImage) {
             day.image = unsplashImage;
-          } else {
-            day.image =
-              fallbackImagesByCategory[category] ||
-              fallbackFallbackList[i % fallbackFallbackList.length];
+            return;
           }
+        }
+
+        // Fallback behavior (Used when USE_SPLASH is false, for supported cities, or if Unsplash fails)
+        if (fallbackImagesByCategory[category]) {
+          day.image = fallbackImagesByCategory[category];
+        } else {
+          day.image = fallbackFallbackList[i % fallbackFallbackList.length];
         }
       }
     })
@@ -152,6 +149,7 @@ async function processImages(plan, city) {
 
   return plan;
 }
+
 /* =====================================================
    MAIN AI ENDPOINT (Updated with verifyToken Guard)
 ===================================================== */
@@ -275,7 +273,6 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing format.`
       : "";
 
-    // ✅ FIXED: Instructing AI to rotate "category" properties systematically matching your schema keys
     const prompt = `
       Task: Create a professional ${numDuration}-day travel itinerary for ${city}, ${country}.
       Total Budget: $${numBudget}.
@@ -285,7 +282,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       User Interests: ${interests?.join(", ") || "general exploration"}.
 
       Instructions:
-      1. Return ONLY raw JSON. No markdown wrappers (do NOT use \`\`\`json).
+      1. Return ONLY raw JSON. No markdown wrappers (do NOT use json codeblocks).
       2. Format exactly as this structure: 
          { 
            "title": "Trip Title Here", 
