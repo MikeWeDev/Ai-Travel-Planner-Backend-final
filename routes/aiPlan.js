@@ -50,7 +50,6 @@ const fallbackImagesByCategory = {
   education: "/images/education.jpg",
 };
 
-// Flattened list to guarantee random-access variety if categories overlap or get repeated
 const fallbackFallbackList = Object.values(fallbackImagesByCategory);
 
 /* =====================================================
@@ -85,26 +84,13 @@ async function fetchUnsplashImage(query) {
 
     console.log(`🌍 Unsplash search → ${query}`);
 
-    const res = await axios.get(
-      "https://api.unsplash.com/search/photos",
-      {
-        params: {
-          query,
-          per_page: 1,
-          orientation: "landscape",
-        },
-        headers: {
-          Authorization: `Client-ID ${UNSPLASH_KEY}`,
-        },
-      }
-    );
+    const res = await axios.get("https://api.unsplash.com/search/photos", {
+      params: { query, per_page: 1, orientation: "landscape" },
+      headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` },
+    });
 
     const imageUrl = res.data.results?.[0]?.urls?.regular || null;
-
-    if (imageUrl) {
-      imageCache.set(query, imageUrl);
-    }
-
+    if (imageUrl) imageCache.set(query, imageUrl);
     return imageUrl;
   } catch (err) {
     console.log("❌ Unsplash fetch failed:", err.message);
@@ -113,20 +99,17 @@ async function fetchUnsplashImage(query) {
 }
 
 /* =====================================================
-   IMAGE PROCESSOR (MAIN MAGIC)
+   IMAGE PROCESSOR
 ===================================================== */
 async function processImages(plan, city) {
   const isSupportedCity = ALL_SUPPORTED_CITIES.includes(city);
-
   if (!plan.days || !Array.isArray(plan.days)) return plan;
 
-  // Process all days concurrently using Promise.all
   await Promise.all(
     plan.days.map(async (day, i) => {
       const category = day.category?.toLowerCase() || "adventure";
 
       if (!isValidImage(day.image)) {
-        // If USE_SPLASH is true and it's a global (unsupported) city, try fetching from Unsplash first
         if (USE_SPLASH && !isSupportedCity) {
           const searchQuery = `${category} attractions in ${city}`;
           const unsplashImage = await fetchUnsplashImage(searchQuery);
@@ -137,7 +120,6 @@ async function processImages(plan, city) {
           }
         }
 
-        // Fallback behavior (Used when USE_SPLASH is false, for supported cities, or if Unsplash fails)
         if (fallbackImagesByCategory[category]) {
           day.image = fallbackImagesByCategory[category];
         } else {
@@ -151,10 +133,12 @@ async function processImages(plan, city) {
 }
 
 /* =====================================================
-   MAIN AI ENDPOINT (Updated with verifyToken Guard)
+   MAIN AI ENDPOINT
 ===================================================== */
 router.post("/ai-plan", verifyToken, async (req, res) => {
-  console.time("⏱️ Total AI-Plan Execution Time");
+  const timerLabel = `Total AI-Plan Execution Time [${Date.now()}]`;
+  console.time(timerLabel);
+
   try {
     const { country, city, interests, budget, duration } = req.body;
 
@@ -167,24 +151,18 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
     const numBudget = parseFloat(String(budget).replace(/[^0-9.]/g, "")) || 0;
     const numDuration = parseInt(duration);
 
-    /* =====================================================
-       BUDGET GUARDRAIL FEATURE
-    ===================================================== */
+    // BUDGET GUARDRAIL
     const MIN_DAILY_RATE = 40; 
     const totalMinRequired = MIN_DAILY_RATE * numDuration;
 
     if (numBudget < totalMinRequired) {
       const maxAffordableDays = Math.floor(numBudget / MIN_DAILY_RATE);
-      
       console.log(`⚠️ Budget Rejected: ${numBudget} for ${numDuration} days in ${city}`);
       
-      let dynamicMessage = "";
-      if (maxAffordableDays >= 1) {
-        dynamicMessage = `A budget of $${numBudget} is insufficient for a ${numDuration}-day trip to ${city}. To proceed, please increase your budget to $${totalMinRequired} or reduce the duration to ${maxAffordableDays} day(s).`;
-      } else {
-        dynamicMessage = `A total budget of $${numBudget} is below the baseline requirement for ${city}. In this region, a minimum of $${MIN_DAILY_RATE} per day is recommended to cover basic transport, food, and site fees so adject toward it.`;
-      }
-      
+      let dynamicMessage = maxAffordableDays >= 1 
+        ? `A budget of $${numBudget} is insufficient for a ${numDuration}-day trip to ${city}. Please increase your budget to $${totalMinRequired} or reduce the duration to ${maxAffordableDays} day(s).`
+        : `A total budget of $${numBudget} is below the baseline requirement for ${city}. A minimum of $${MIN_DAILY_RATE} per day is recommended.`;
+
       return res.status(400).json({
         status: "REJECTED",
         reason: "INSUFFICIENT_BUDGET",
@@ -197,38 +175,36 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       });
     }
 
-    /* =====================================================
-       PROCEED WITH GENERATION (BUDGET IS OK)
-    ===================================================== */
     const isSupported = ALL_SUPPORTED_CITIES.includes(city);
     let realPlaces = []; 
 
-    // =========================================================================
-    // ✅ EXTRACTION: Fetch BOTH Negative Constraints & Positive Anchors
-    // =========================================================================
+    // SAFE USER ID EXTRACTION
     let historicalComplaints = [];
     let positiveStyles = [];
-    const userId = req.user ? req.user.id : null;
+    const userId = req.user?.id || req.user?._id || null;
 
     if (userId) {
       console.time("⏱️ DB UserPreference Lookup");
-      const userProfile = await UserPreference.findOne({ userId: userId });
-      console.timeEnd("⏱️ DB UserPreference Lookup");
-
-      if (userProfile) {
-        if (userProfile.negativeConstraints) {
-          historicalComplaints = userProfile.negativeConstraints.map(c => c.feedback);
+      try {
+        const userProfile = await UserPreference.findOne({ userId: userId });
+        if (userProfile) {
+          if (userProfile.negativeConstraints) {
+            historicalComplaints = userProfile.negativeConstraints.map(c => c.feedback);
+          }
+          if (userProfile.positiveAnchors) {
+            positiveStyles = userProfile.positiveAnchors.map(a => a.feedback);
+          }
         }
-        if (userProfile.positiveAnchors) {
-          positiveStyles = userProfile.positiveAnchors.map(a => a.feedback);
-        }
+      } catch (dbErr) {
+        console.error("⚠️ DB Preference Lookup Error:", dbErr.message);
+      } finally {
+        console.timeEnd("⏱️ DB UserPreference Lookup");
       }
     }
 
-    // 3. FETCH DATA FROM PYTHON (Only if USE_PYTHON_BACKEND flag is set to true)
+    // 3. PYTHON BACKEND (IF ENABLED)
     if (USE_PYTHON_BACKEND && isSupported) {
       console.log(`🤖 ROUTE A: Using Python Algorithm for ${city}`);
-
       const pythonPayload = {
         city: String(city),
         country: String(country || ""),
@@ -241,9 +217,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       
       try {
         const pythonBaseUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
-        console.time("⏱️ Python Backend Request");
         const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload);
-        console.timeEnd("⏱️ Python Backend Request");
         realPlaces = pythonResponse.data.itinerary || [];
       } catch (pyErr) {
         console.error("❌ Python Server Error:", pyErr.message);
@@ -252,7 +226,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       console.log(`⚡ Cohere-Only Mode Active (Python Redirection Bypassed) for ${city}`);
     }
 
-    // 4. PREPARE COORDINATE LOOKUP
+    // 4. COORDINATE LOOKUP
     const coordLookup = {};
     realPlaces.forEach(day => {
       if (day.activities && Array.isArray(day.activities)) {
@@ -265,7 +239,7 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       }
     });
 
-    // 5. STREAMLINED & FAST PROMPT
+    // 5. PROMPT PREPARATION
     const allPlaceNames = Object.keys(coordLookup).join(", ");
     const placeContext = allPlaceNames ? `Must include: ${allPlaceNames}.` : "Suggest key local attractions.";
     const exclusionsContext = historicalComplaints.length > 0 ? `DO NOT include: ${historicalComplaints.join(", ")}.` : "";
@@ -279,7 +253,7 @@ ${inclusionStylesContext}
 
 Rules:
 1. Return ONLY valid JSON (no markdown wrappers or codeblocks).
-2. JSON Schema:
+2. Format:
 {
   "title": "Trip Title",
   "days": [
@@ -287,29 +261,35 @@ Rules:
       "day": 1,
       "category": "culture",
       "activities": [
-        { "name": "Exact Spot", "lat": 0.0000, "lng": 0.0000 }
+        { "name": "Exact Spot Name", "lat": 0.0000, "lng": 0.0000 }
       ]
     }
   ]
 }
 3. Category options: [arrival, culture, adventure, shopping, food, relaxation, wildlife, history, nightlife, departure, hotel, museum, nature, sport, historical, festival].
-4. Provide real decimal GPS coordinates ("lat" and "lng") for each activity.
-5. Include 3 to 5 activities per day.
+4. Provide real decimal GPS coordinates ("lat" and "lng") for each activity location.
+5. Provide 3 to 5 activities per day.
 `;
 
-    // 6. CALL COHERE (USING LIGHTER MODEL `command-r` FOR SPEED)
-    console.time("⏱️ Cohere LLM Generation Time");
-    const cohereRes = await axios.post("https://api.cohere.ai/v2/chat", {
-      model: "command-r", // Changed to command-r for significantly faster inference
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
-      max_tokens: 1500
-    }, {
-      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` }
-    });
-    console.timeEnd("⏱️ Cohere LLM Generation Time");
+    // 6. CALL COHERE (STABLE V1 CHAT ENDPOINT WITH COMMAND-R)
+    const cohereTimer = `Cohere LLM Generation Time [${Date.now()}]`;
+    console.time(cohereTimer);
 
-    let reply = cohereRes?.data?.message?.content?.[0]?.text || "";
+    let reply = "";
+    try {
+      const cohereRes = await axios.post("https://api.cohere.ai/v1/chat", {
+        model: "command-r",
+        message: prompt,
+        temperature: 0.3,
+      }, {
+        headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` }
+      });
+
+      reply = cohereRes?.data?.text || "";
+    } finally {
+      console.timeEnd(cohereTimer);
+    }
+
     reply = reply.replace(/```json/g, "").replace(/```/g, "").trim();
 
     // 7. PARSE AND ENRICH DATA
@@ -324,7 +304,6 @@ Rules:
           const aiLng = typeof act === "object" ? (act.lng || act.longitude || 0) : 0;
 
           const pythonCoords = coordLookup[targetName];
-          
           return {
             name: targetName,
             lat: pythonCoords?.lat || aiLat,
@@ -334,17 +313,18 @@ Rules:
       }));
     }
 
-    // 8. ADD IMAGES AND SEND TO CLIENT
-    console.time("⏱️ Image Processing Time");
+    // 8. ADD IMAGES AND SEND RESPONSE
     parsedPlan = await processImages(parsedPlan, city);
-    console.timeEnd("⏱️ Image Processing Time");
-
-    console.timeEnd("⏱️ Total AI-Plan Execution Time");
     res.json(parsedPlan);
 
   } catch (err) {
-    console.error("❌ AI Route Error:", err.message);
-    res.status(500).json({ message: "Internal server error." });
+    console.error("❌ AI Route Error Details:", err.response?.data || err.message);
+    res.status(500).json({ 
+      message: "Internal server error during itinerary generation.",
+      details: err.response?.data?.message || err.message 
+    });
+  } finally {
+    console.timeEnd(timerLabel);
   }
 });
 
