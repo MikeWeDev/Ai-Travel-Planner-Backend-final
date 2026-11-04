@@ -96,6 +96,7 @@ async function fetchUnsplashImage(query) {
         headers: {
           Authorization: `Client-ID ${UNSPLASH_KEY}`,
         },
+        timeout: 6000, // 6 seconds timeout safeguard for image fetching
       }
     );
 
@@ -107,7 +108,7 @@ async function fetchUnsplashImage(query) {
 
     return imageUrl;
   } catch (err) {
-    console.log("❌ Unsplash fetch failed");
+    console.log("❌ Unsplash fetch failed or timed out:", err.message);
     return null;
   }
 }
@@ -154,6 +155,7 @@ async function processImages(plan, city) {
    MAIN AI ENDPOINT (Updated with verifyToken Guard)
 ===================================================== */
 router.post("/ai-plan", verifyToken, async (req, res) => {
+  console.time("⏱️ Total AI-Plan Execution Time");
   try {
     const { country, city, interests, budget, duration } = req.body;
 
@@ -210,7 +212,10 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
     const userId = req.user ? req.user.id : null;
 
     if (userId) {
+      console.time("⏱️ DB UserPreference Lookup");
       const userProfile = await UserPreference.findOne({ userId: userId });
+      console.timeEnd("⏱️ DB UserPreference Lookup");
+
       if (userProfile) {
         if (userProfile.negativeConstraints) {
           historicalComplaints = userProfile.negativeConstraints.map(c => c.feedback);
@@ -237,10 +242,12 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       
       try {
         const pythonBaseUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
-        const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload);
+        console.time("⏱️ Python Backend Request");
+        const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload, { timeout: 10000 });
+        console.timeEnd("⏱️ Python Backend Request");
         realPlaces = pythonResponse.data.itinerary || [];
       } catch (pyErr) {
-        console.error("❌ Python Server Error:", pyErr.message);
+        console.error("❌ Python Server Error or Timeout:", pyErr.message);
       }
     } else {
       console.log(`⚡ Cohere-Only Mode Active (Python Redirection Bypassed) for ${city}`);
@@ -303,14 +310,17 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       6. Strict Rule: If any location name matches or is related to items listed in the CRITICAL EXCLUSIONS section, omit it completely. Choose alternative local attractions instead.
     `;
 
-    // 6. CALL COHERE
+    // 6. CALL COHERE (WITH 25s TIMEOUT GUARD)
+    console.time("⏱️ Cohere LLM Generation Time");
     const cohereRes = await axios.post("https://api.cohere.ai/v2/chat", {
       model: "command-r-plus-08-2024",
       messages: [{ role: "user", content: prompt }],
       temperature: 0.3,
     }, {
-      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` }
+      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` },
+      timeout: 25000 // 25 seconds timeout to prevent indefinite socket hanging
     });
+    console.timeEnd("⏱️ Cohere LLM Generation Time");
 
     let reply = cohereRes?.data?.message?.content?.[0]?.text || "";
     reply = reply.replace(/```json/g, "").replace(/```/g, "").trim();
@@ -338,12 +348,16 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
     }
 
     // 8. ADD IMAGES AND SEND TO CLIENT
+    console.time("⏱️ Image Processing Time");
     parsedPlan = await processImages(parsedPlan, city);
+    console.timeEnd("⏱️ Image Processing Time");
+
+    console.timeEnd("⏱️ Total AI-Plan Execution Time");
     res.json(parsedPlan);
 
   } catch (err) {
-    console.error("❌ AI Route Error:", err.message);
-    res.status(500).json({ message: "Internal server error" });
+    console.error("❌ AI Route Error / Timeout:", err.message);
+    res.status(500).json({ message: "Internal server error or external service timeout." });
   }
 });
 
