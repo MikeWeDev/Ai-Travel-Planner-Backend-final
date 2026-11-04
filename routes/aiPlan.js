@@ -96,7 +96,6 @@ async function fetchUnsplashImage(query) {
         headers: {
           Authorization: `Client-ID ${UNSPLASH_KEY}`,
         },
-        // No timeout limit
       }
     );
 
@@ -266,59 +265,47 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       }
     });
 
-    // 5. PREPARE PROMPT FOR COHERE WITH HARD ENFORCEMENT RULES
+    // 5. STREAMLINED & FAST PROMPT
     const allPlaceNames = Object.keys(coordLookup).join(", ");
-    const placeContext = allPlaceNames.length > 0 
-      ? `Mandatory Locations to include: ${allPlaceNames}.` 
-      : "Suggested Locations: Recommend best local spots.";
+    const placeContext = allPlaceNames ? `Must include: ${allPlaceNames}.` : "Suggest key local attractions.";
+    const exclusionsContext = historicalComplaints.length > 0 ? `DO NOT include: ${historicalComplaints.join(", ")}.` : "";
+    const inclusionStylesContext = positiveStyles.length > 0 ? `Style preferences: ${positiveStyles.join(" | ")}.` : "";
 
-    const exclusionsContext = historicalComplaints.length > 0
-      ? `CRITICAL EXCLUSIONS: Do NOT include, mention, or suggest any of these places or activities under any circumstances: ${historicalComplaints.join(", ")}.`
-      : "";
+    const prompt = `Create a ${numDuration}-day travel itinerary for ${city}, ${country} (Budget: $${numBudget}).
+Interests: ${interests?.join(", ") || "exploration"}.
+${placeContext}
+${exclusionsContext}
+${inclusionStylesContext}
 
-    const inclusionStylesContext = positiveStyles.length > 0
-      ? `USER PREFERENCES (GOLD STANDARDS): The traveler highly values and prefers generations that prioritize these guidelines: ${positiveStyles.join(" | ")}. Replicate this style, density, and pacing format.`
-      : "";
+Rules:
+1. Return ONLY valid JSON (no markdown wrappers or codeblocks).
+2. JSON Schema:
+{
+  "title": "Trip Title",
+  "days": [
+    {
+      "day": 1,
+      "category": "culture",
+      "activities": [
+        { "name": "Exact Spot", "lat": 0.0000, "lng": 0.0000 }
+      ]
+    }
+  ]
+}
+3. Category options: [arrival, culture, adventure, shopping, food, relaxation, wildlife, history, nightlife, departure, hotel, museum, nature, sport, historical, festival].
+4. Provide real decimal GPS coordinates ("lat" and "lng") for each activity.
+5. Include 3 to 5 activities per day.
+`;
 
-    const prompt = `
-      Task: Create a professional ${numDuration}-day travel itinerary for ${city}, ${country}.
-      Total Budget: $${numBudget}.
-      ${placeContext}
-      ${exclusionsContext}
-      ${inclusionStylesContext}
-      User Interests: ${interests?.join(", ") || "general exploration"}.
-
-      Instructions:
-      1. Return ONLY raw JSON. No markdown wrappers (do NOT use json codeblocks).
-      2. Format exactly as this structure: 
-         { 
-           "title": "Trip Title Here", 
-           "days": [ 
-             { 
-               "day": 1, 
-               "category": "culture", 
-               "activities": [
-                 { "name": "Exact Place Name 1", "lat": 0.0000, "lng": 0.0000 },
-                 { "name": "Exact Place Name 2", "lat": 0.0000, "lng": 0.0000 }
-               ] 
-             } 
-           ] 
-         }
-      3. Category Rule: You must assign a distinct contextual theme key to each day's "category" parameter matching the target activities. Choose dynamically from this list: [arrival, culture, adventure, shopping, food, relaxation, wildlife, history, nightlife, departure, hotel, museum, nature, sport, historical, festival]. Do not just repeat the same category for every day.
-      4. Coordinates Rule: Look up and provide real, highly accurate GPS decimal coordinates ("lat" and "lng") for every single activity location. Do not leave them at 0.
-      5. Density Rule: Each day MUST contain a minimum of 3 activities, and a maximum of 5 activities. Aim for 4-5 high-quality activities per day if context allows. Never provide fewer than 3.
-      6. Strict Rule: Confirm that none of the generated locations match or are related to items listed in the CRITICAL EXCLUSIONS section.
-    `;
-
-    // 6. CALL COHERE (WITHOUT TIMEOUT - WILL WAIT INDEFINITELY UNTIL COHERE RESPONDS)
+    // 6. CALL COHERE (USING LIGHTER MODEL `command-r` FOR SPEED)
     console.time("⏱️ Cohere LLM Generation Time");
     const cohereRes = await axios.post("https://api.cohere.ai/v2/chat", {
-      model: "command-r-plus-08-2024",
-      messages: [{ role:"user", content: prompt }], // Note: Keep standard format
+      model: "command-r", // Changed to command-r for significantly faster inference
+      messages: [{ role: "user", content: prompt }],
       temperature: 0.3,
+      max_tokens: 1500
     }, {
       headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` }
-      // No timeout parameter here
     });
     console.timeEnd("⏱️ Cohere LLM Generation Time");
 
