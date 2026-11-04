@@ -136,7 +136,8 @@ async function processImages(plan, city) {
    MAIN AI ENDPOINT
 ===================================================== */
 router.post("/ai-plan", verifyToken, async (req, res) => {
-  const timerLabel = `Total AI-Plan Execution Time [${Date.now()}]`;
+  const uniqueId = Date.now();
+  const timerLabel = `⏱️ Total AI-Plan Execution Time [${uniqueId}]`;
   console.time(timerLabel);
 
   try {
@@ -271,14 +272,14 @@ Rules:
 5. Provide 3 to 5 activities per day.
 `;
 
-    // 6. CALL COHERE (STABLE V1 CHAT ENDPOINT WITH COMMAND-R)
-    const cohereTimer = `Cohere LLM Generation Time [${Date.now()}]`;
+    // 6. CALL COHERE (USING ACTIVE MODEL `command-r-08-2024`)
+    const cohereTimer = `⏱️ Cohere LLM Generation Time [${uniqueId}]`;
     console.time(cohereTimer);
 
     let reply = "";
     try {
       const cohereRes = await axios.post("https://api.cohere.ai/v1/chat", {
-        model: "command-r",
+        model: "command-r-08-2024", // 🟢 Updated to an active non-deprecated model
         message: prompt,
         temperature: 0.3,
       }, {
