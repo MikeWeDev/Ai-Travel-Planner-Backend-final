@@ -96,7 +96,7 @@ async function fetchUnsplashImage(query) {
         headers: {
           Authorization: `Client-ID ${UNSPLASH_KEY}`,
         },
-        timeout: 6000, // 6 seconds timeout safeguard for image fetching
+        // No timeout limit
       }
     );
 
@@ -108,7 +108,7 @@ async function fetchUnsplashImage(query) {
 
     return imageUrl;
   } catch (err) {
-    console.log("❌ Unsplash fetch failed or timed out:", err.message);
+    console.log("❌ Unsplash fetch failed:", err.message);
     return null;
   }
 }
@@ -243,11 +243,11 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       try {
         const pythonBaseUrl = process.env.PYTHON_BACKEND_URL || "http://localhost:8000";
         console.time("⏱️ Python Backend Request");
-        const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload, { timeout: 10000 });
+        const pythonResponse = await axios.post(`${pythonBaseUrl}/generate`, pythonPayload);
         console.timeEnd("⏱️ Python Backend Request");
         realPlaces = pythonResponse.data.itinerary || [];
       } catch (pyErr) {
-        console.error("❌ Python Server Error or Timeout:", pyErr.message);
+        console.error("❌ Python Server Error:", pyErr.message);
       }
     } else {
       console.log(`⚡ Cohere-Only Mode Active (Python Redirection Bypassed) for ${city}`);
@@ -307,18 +307,18 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
       3. Category Rule: You must assign a distinct contextual theme key to each day's "category" parameter matching the target activities. Choose dynamically from this list: [arrival, culture, adventure, shopping, food, relaxation, wildlife, history, nightlife, departure, hotel, museum, nature, sport, historical, festival]. Do not just repeat the same category for every day.
       4. Coordinates Rule: Look up and provide real, highly accurate GPS decimal coordinates ("lat" and "lng") for every single activity location. Do not leave them at 0.
       5. Density Rule: Each day MUST contain a minimum of 3 activities, and a maximum of 5 activities. Aim for 4-5 high-quality activities per day if context allows. Never provide fewer than 3.
-      6. Strict Rule: If any location name matches or is related to items listed in the CRITICAL EXCLUSIONS section, omit it completely. Choose alternative local attractions instead.
+      6. Strict Rule: Confirm that none of the generated locations match or are related to items listed in the CRITICAL EXCLUSIONS section.
     `;
 
-    // 6. CALL COHERE (WITH 25s TIMEOUT GUARD)
+    // 6. CALL COHERE (WITHOUT TIMEOUT - WILL WAIT INDEFINITELY UNTIL COHERE RESPONDS)
     console.time("⏱️ Cohere LLM Generation Time");
     const cohereRes = await axios.post("https://api.cohere.ai/v2/chat", {
       model: "command-r-plus-08-2024",
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role:"user", content: prompt }], // Note: Keep standard format
       temperature: 0.3,
     }, {
-      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` },
-      timeout: 25000 // 25 seconds timeout to prevent indefinite socket hanging
+      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` }
+      // No timeout parameter here
     });
     console.timeEnd("⏱️ Cohere LLM Generation Time");
 
@@ -356,8 +356,8 @@ router.post("/ai-plan", verifyToken, async (req, res) => {
     res.json(parsedPlan);
 
   } catch (err) {
-    console.error("❌ AI Route Error / Timeout:", err.message);
-    res.status(500).json({ message: "Internal server error or external service timeout." });
+    console.error("❌ AI Route Error:", err.message);
+    res.status(500).json({ message: "Internal server error." });
   }
 });
 
