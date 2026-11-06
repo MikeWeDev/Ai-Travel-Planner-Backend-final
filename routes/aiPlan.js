@@ -272,14 +272,15 @@ Rules:
 5. Provide 3 to 5 activities per day.
 `;
 
-    // 6. CALL COHERE (USING ACTIVE MODEL `command-r-08-2024`)
+
+   // 6. CALL COHERE (USING THE FASTEST SMALL MODEL `command-r7b-12-2024`)
     const cohereTimer = `⏱️ Cohere LLM Generation Time [${uniqueId}]`;
     console.time(cohereTimer);
 
     let reply = "";
     try {
       const cohereRes = await axios.post("https://api.cohere.ai/v1/chat", {
-        model: "command-r-08-2024", // 🟢 Updated to an active non-deprecated model
+        model: "command-r7b-12-2024", // 🟢 Smallest & fastest model for rapid response
         message: prompt,
         temperature: 0.3,
       }, {
